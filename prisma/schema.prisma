@@ -1,0 +1,277 @@
+// ============================================================
+// FILE 01 — prisma/schema.prisma
+// Place at: <project-root>/prisma/schema.prisma
+// Run:  npx prisma migrate dev --name init
+// ============================================================
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ─────────────────────────────────────────────
+// ENUMS
+// ─────────────────────────────────────────────
+
+enum UserRole {
+  OWNER
+  ADMIN
+  ENGINEER
+  VIEWER
+}
+
+enum ProjectStatus {
+  SURVEY
+  INSTALLATION
+  NET_METERING
+  COMPLETED
+  ON_HOLD
+}
+
+enum RoofType {
+  FLAT
+  SLANTED
+  HIP
+  SHED
+  MIXED
+}
+
+enum InventoryCategory {
+  PANEL
+  INVERTER
+  BATTERY
+  MOUNTING
+  CABLE
+  OTHER
+}
+
+// ─────────────────────────────────────────────
+// ORGANIZATION  (tenant root)
+// ─────────────────────────────────────────────
+
+model Organization {
+  id        String   @id @default(cuid())
+  name      String
+  slug      String   @unique
+  logoUrl   String?
+  phone     String?
+  address   String?
+  city      String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  users      User[]
+  projects   Project[]
+  inventory  Inventory[]
+  documents  Document[]
+
+  @@map("organizations")
+}
+
+// ─────────────────────────────────────────────
+// USER
+// ─────────────────────────────────────────────
+
+model User {
+  id             String   @id @default(cuid())
+  name           String
+  email          String   @unique
+  hashedPassword String?
+  avatarUrl      String?
+  role           UserRole @default(VIEWER)
+  isActive       Boolean  @default(true)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  organizationId String
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  assignedProjects Project[] @relation("AssignedEngineer")
+  createdProjects  Project[] @relation("CreatedBy")
+  surveys          SiteSurvey[]
+
+  @@index([organizationId])
+  @@map("users")
+}
+
+// ─────────────────────────────────────────────
+// PROJECT
+// ─────────────────────────────────────────────
+
+model Project {
+  id               String        @id @default(cuid())
+  title            String
+  clientName       String
+  clientPhone      String?
+  clientEmail      String?
+  address          String
+  city             String
+  status           ProjectStatus @default(SURVEY)
+  systemSizeKw     Float?
+  estimatedCost    Float?
+  actualCost       Float?
+  notes            String?
+  surveyDate       DateTime?
+  installStartDate DateTime?
+  installEndDate   DateTime?
+  netMeteringDate  DateTime?
+  completedAt      DateTime?
+  createdAt        DateTime      @default(now())
+  updatedAt        DateTime      @updatedAt
+
+  organizationId String
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  assignedEngineerId String?
+  assignedEngineer   User?   @relation("AssignedEngineer", fields: [assignedEngineerId], references: [id])
+
+  createdById String?
+  createdBy   User?   @relation("CreatedBy", fields: [createdById], references: [id])
+
+  survey    SiteSurvey?
+  documents Document[]
+  items     ProjectInventoryItem[]
+
+  @@index([organizationId])
+  @@index([status])
+  @@map("projects")
+}
+
+// ─────────────────────────────────────────────
+// SITE SURVEY  (child of Project)
+// ─────────────────────────────────────────────
+
+model SiteSurvey {
+  id              String    @id @default(cuid())
+  roofType        RoofType
+  roofAreaSqFt    Float?
+  roofCondition   String?
+  monthlyUnitsKwh Float
+  peakSunHours    Float?
+  gridAvailable   Boolean   @default(true)
+  netMeteringReady Boolean  @default(false)
+  existingSystem  Boolean   @default(false)
+  shadingIssues   Boolean   @default(false)
+  notes           String?
+  conductedAt     DateTime  @default(now())
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  projectId String  @unique
+  project   Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  conductedById String?
+  conductedBy   User?   @relation(fields: [conductedById], references: [id])
+
+  images SurveyImage[]
+
+  @@map("site_surveys")
+}
+
+// ─────────────────────────────────────────────
+// SURVEY IMAGE
+// ─────────────────────────────────────────────
+
+model SurveyImage {
+  id        String   @id @default(cuid())
+  url       String
+  key       String   // storage key (S3 / Cloudflare R2)
+  label     String?
+  createdAt DateTime @default(now())
+
+  surveyId String
+  survey   SiteSurvey @relation(fields: [surveyId], references: [id], onDelete: Cascade)
+
+  @@index([surveyId])
+  @@map("survey_images")
+}
+
+// ─────────────────────────────────────────────
+// INVENTORY
+// ─────────────────────────────────────────────
+
+model Inventory {
+  id               String            @id @default(cuid())
+  name             String
+  brand            String?
+  model            String?
+  category         InventoryCategory
+  unitPrice        Float
+  quantityInStock  Int               @default(0)
+  unit             String            @default("pcs") // pcs, meters, rolls
+  warrantyYears    Int?
+  specifications   Json?             // flexible KV store for wattage, efficiency, etc.
+  isActive         Boolean           @default(true)
+  createdAt        DateTime          @default(now())
+  updatedAt        DateTime          @updatedAt
+
+  organizationId String
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  projectItems ProjectInventoryItem[]
+
+  @@index([organizationId])
+  @@index([category])
+  @@map("inventory")
+}
+
+// ─────────────────────────────────────────────
+// PROJECT ↔ INVENTORY  (junction / BOM)
+// ─────────────────────────────────────────────
+
+model ProjectInventoryItem {
+  id         String @id @default(cuid())
+  quantity   Int
+  unitPrice  Float  // snapshot price at time of assignment
+  notes      String?
+
+  projectId   String
+  project     Project   @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  inventoryId String
+  inventory   Inventory @relation(fields: [inventoryId], references: [id])
+
+  @@unique([projectId, inventoryId])
+  @@map("project_inventory_items")
+}
+
+// ─────────────────────────────────────────────
+// DOCUMENT
+// ─────────────────────────────────────────────
+
+enum DocumentType {
+  QUOTATION
+  CONTRACT
+  NET_METERING_APPLICATION
+  WAPDA_APPROVAL
+  INSPECTION_REPORT
+  INVOICE
+  WARRANTY
+  OTHER
+}
+
+model Document {
+  id          String       @id @default(cuid())
+  name        String
+  type        DocumentType @default(OTHER)
+  url         String
+  key         String       // storage key
+  mimeType    String?
+  sizeBytes   Int?
+  createdAt   DateTime     @default(now())
+  updatedAt   DateTime     @updatedAt
+
+  organizationId String
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  projectId String?
+  project   Project? @relation(fields: [projectId], references: [id])
+
+  @@index([organizationId])
+  @@index([projectId])
+  @@map("documents")
+}
